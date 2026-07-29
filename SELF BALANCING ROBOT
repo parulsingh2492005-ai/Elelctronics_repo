@@ -1,1 +1,104 @@
+#include <Wire.h>
+#include <MPU6050_light.h>
 
+MPU6050 mpu(Wire);
+
+// ---------------- MOTOR PINS ----------------
+#define IN1 D5
+#define IN2 D6
+#define IN3 D7
+#define IN4 D8
+
+// ---------------- PID CONSTANTS (TUNE THESE) ----------------
+double Kp = 22.0;
+double Ki = 220.0;
+double Kd = 0.8;
+
+double setpoint = 0.0;     // balance angle (adjust to your bot's real balance point after testing)
+double input, output;
+double error, lastError = 0;
+double integral = 0, derivative = 0;
+
+unsigned long lastTime = 0;
+double loopInterval = 5;   // ms
+
+void setup() {
+  Serial.begin(115200);
+  Wire.begin();  // D2=SDA, D1=SCL by default on NodeMCU
+
+  byte status = mpu.begin();
+  Serial.print("MPU6050 status: ");
+  Serial.println(status);
+  while (status != 0) { } // stop if MPU not connected
+
+  Serial.println("Calibrating... keep robot still & upright");
+  delay(1000);
+  mpu.calcOffsets();
+  Serial.println("Done!");
+
+  pinMode(IN1, OUTPUT);
+  pinMode(IN2, OUTPUT);
+  pinMode(IN3, OUTPUT);
+  pinMode(IN4, OUTPUT);
+
+  lastTime = millis();
+}
+
+void loop() {
+  mpu.update();
+
+  if ((millis() - lastTime) >= loopInterval) {
+    input = mpu.getAngleX();   // adjust axis (X/Y) depending on how MPU6050 is mounted
+
+    // ---------------- PID CALC ----------------
+    error = setpoint - input;
+    integral += error * (loopInterval / 1000.0);
+    integral = constrain(integral, -255, 255);   // anti-windup
+    derivative = (error - lastError) / (loopInterval / 1000.0);
+
+    output = (Kp * error) + (Ki * integral / 1000.0) + (Kd * derivative);
+    output = constrain(output, -255, 255);
+
+    lastError = error;
+    lastTime = millis();
+
+    // If robot has fallen too far, stop motors (safety cutoff)
+    if (abs(input) > 45) {
+      stopMotors();
+      integral = 0;
+    } else {
+      driveMotors(output);
+    }
+
+    // Debug
+    Serial.print("Angle: "); Serial.print(input);
+    Serial.print("  Output: "); Serial.println(output);
+  }
+}
+
+// ---------------- MOTOR CONTROL ----------------
+void driveMotors(double pidOutput) {
+  int speed = abs(pidOutput);
+  speed = constrain(speed, 0, 255);
+
+  if (pidOutput > 0) {
+    // move forward to correct falling backward
+    analogWrite(IN1, speed);
+    digitalWrite(IN2, LOW);
+    analogWrite(IN3, speed);
+    digitalWrite(IN4, LOW);
+  } else {
+    // move backward to correct falling forward
+    digitalWrite(IN1, LOW);
+    analogWrite(IN2, speed);
+    digitalWrite(IN3, LOW);
+    analogWrite(IN4, speed);
+  }
+}
+
+void stopMotors() {
+  digitalWrite(IN1, LOW);
+  digitalWrite(IN2, LOW);
+  digitalWrite(IN3, LOW);
+  digitalWrite(IN4, LOW);
+}
